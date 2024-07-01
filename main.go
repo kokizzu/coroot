@@ -77,17 +77,6 @@ func main() {
 	bootstrapPrometheus(database, *bootstrapPrometheusUrl, *bootstrapRefreshInterval, *bootstrapPrometheusExtraSelector)
 	bootstrapClickhouse(database, *bootstrapClickhouseAddr, *bootstrapClickhouseUser, *bootstrapClickhousePassword, *bootstrapClickhouseDatabase)
 
-	coll := collector.New(database)
-	go func() {
-		ch := make(chan os.Signal, 1)
-		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
-		<-ch
-		coll.Close()
-		os.Exit(0)
-	}()
-
-	migrateClickhouse(database, coll)
-
 	cacheConfig := cache.Config{
 		Path: path.Join(*dataDir, "cache"),
 		GC: &cache.GcConfig{
@@ -103,6 +92,17 @@ func main() {
 	if err != nil {
 		klog.Exitln(err)
 	}
+
+	coll := collector.New(database, promCache)
+	go func() {
+		ch := make(chan os.Signal, 1)
+		signal.Notify(ch, syscall.SIGINT, syscall.SIGTERM)
+		<-ch
+		coll.Close()
+		os.Exit(0)
+	}()
+
+	migrateClickhouse(database, coll)
 
 	pricing, err := cloud_pricing.NewManager(path.Join(*dataDir, "cloud-pricing"))
 	if err != nil {
@@ -128,6 +128,7 @@ func main() {
 	router.HandleFunc("/v1/traces", coll.Traces)
 	router.HandleFunc("/v1/logs", coll.Logs)
 	router.HandleFunc("/v1/profiles", coll.Profiles)
+	router.HandleFunc("/v1/config", coll.Config)
 
 	r := router
 	cleanUrlBasePath(urlBasePath)
@@ -137,7 +138,7 @@ func main() {
 	r.HandleFunc("/api/projects", a.Projects).Methods(http.MethodGet)
 	r.HandleFunc("/api/project/", a.Project).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/api/project/{project}", a.Project).Methods(http.MethodGet, http.MethodPost, http.MethodDelete)
-	r.HandleFunc("/api/project/{project}/status", a.Status).Methods(http.MethodGet, http.MethodPost)
+	r.HandleFunc("/api/project/{project}/status", a.Status).Methods(http.MethodGet)
 	r.HandleFunc("/api/project/{project}/overview/{view}", a.Overview).Methods(http.MethodGet)
 	r.HandleFunc("/api/project/{project}/configs", a.Configs).Methods(http.MethodGet)
 	r.HandleFunc("/api/project/{project}/categories", a.Categories).Methods(http.MethodGet, http.MethodPost)
@@ -145,6 +146,7 @@ func main() {
 	r.HandleFunc("/api/project/{project}/integrations/{type}", a.Integration).Methods(http.MethodGet, http.MethodPut, http.MethodDelete, http.MethodPost)
 	r.HandleFunc("/api/project/{project}/app/{app}", a.App).Methods(http.MethodGet)
 	r.HandleFunc("/api/project/{project}/app/{app}/check/{check}/config", a.Check).Methods(http.MethodGet, http.MethodPost)
+	r.HandleFunc("/api/project/{project}/app/{app}/instrumentation/{type}", a.Instrumentation).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/api/project/{project}/app/{app}/profile", a.Profile).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/api/project/{project}/app/{app}/tracing", a.Tracing).Methods(http.MethodGet, http.MethodPost)
 	r.HandleFunc("/api/project/{project}/app/{app}/logs", a.Logs).Methods(http.MethodGet, http.MethodPost)
@@ -158,7 +160,7 @@ func main() {
 	if *developerMode {
 		r.PathPrefix("/static/").Handler(http.StripPrefix(*urlBasePath+"static/", http.FileServer(http.Dir("./static"))))
 	} else {
-		r.PathPrefix("/static/").Handler(http.StripPrefix(*urlBasePath, http.FileServer(http.FS(static))))
+		r.PathPrefix("/static/").Handler(http.StripPrefix(*urlBasePath, http.FileServer(&StaticFSWrapper{FileSystem: http.FS(static), modTime: time.Now()})))
 	}
 
 	indexHtml := readIndexHtml(*urlBasePath, version, instanceUuid, !*doNotCheckForUpdates, *developerMode)
@@ -330,4 +332,33 @@ func migrateClickhouse(database *db.DB, coll *collector.Collector) {
 			}
 		}(cfg)
 	}
+}
+
+type StaticFSWrapper struct {
+	http.FileSystem
+	modTime time.Time
+}
+
+func (f *StaticFSWrapper) Open(name string) (http.File, error) {
+	file, err := f.FileSystem.Open(name)
+	return &StaticFileWrapper{File: file, modTime: f.modTime}, err
+}
+
+type StaticFileWrapper struct {
+	http.File
+	modTime time.Time
+}
+
+func (f *StaticFileWrapper) Stat() (os.FileInfo, error) {
+	fileInfo, err := f.File.Stat()
+	return &StaticFileInfoWrapper{FileInfo: fileInfo, modTime: f.modTime}, err
+}
+
+type StaticFileInfoWrapper struct {
+	os.FileInfo
+	modTime time.Time
+}
+
+func (f *StaticFileInfoWrapper) ModTime() time.Time {
+	return f.modTime
 }

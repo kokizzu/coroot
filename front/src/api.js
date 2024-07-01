@@ -106,10 +106,6 @@ export default class Api {
         this.get(this.projectPath(`status`), {}, cb);
     }
 
-    setStatus(form, cb) {
-        this.post(this.projectPath(`status`), form, cb);
-    }
-
     getOverview(view, query, cb) {
         this.get(this.projectPath(`overview/${view}`), { query }, cb);
     }
@@ -155,6 +151,14 @@ export default class Api {
 
     saveCheckConfig(appId, checkId, form, cb) {
         this.post(this.projectPath(`app/${appId}/check/${checkId}/config`), form, cb);
+    }
+
+    getInstrumentation(appId, type, cb) {
+        this.get(this.projectPath(`app/${appId}/instrumentation/${type}`), {}, cb);
+    }
+
+    saveInstrumentationSettings(appId, type, form, cb) {
+        this.post(this.projectPath(`app/${appId}/instrumentation/${type}`), form, cb);
     }
 
     getProfile(appId, query, cb) {

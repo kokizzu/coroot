@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"sort"
 	"time"
@@ -124,33 +125,6 @@ func (api *Api) Project(w http.ResponseWriter, r *http.Request) {
 
 func (api *Api) Status(w http.ResponseWriter, r *http.Request) {
 	projectId := db.ProjectId(mux.Vars(r)["project"])
-	if r.Method == http.MethodPost {
-		if api.readOnly {
-			return
-		}
-		var form forms.ProjectStatusForm
-		if err := forms.ReadAndValidate(r, &form); err != nil {
-			klog.Warningln("bad request:", err)
-			http.Error(w, "", http.StatusBadRequest)
-			return
-		}
-		var appType model.ApplicationType
-		var mute bool
-		switch {
-		case form.Mute != nil:
-			mute = true
-			appType = *form.Mute
-		case form.UnMute != nil:
-			mute = false
-			appType = *form.UnMute
-		}
-		if err := api.db.ToggleConfigurationHint(projectId, appType, mute); err != nil {
-			klog.Errorln("failed to toggle:", err)
-			http.Error(w, "", http.StatusInternalServerError)
-			return
-		}
-		return
-	}
 	project, err := api.db.GetProject(projectId)
 	if err != nil {
 		if errors.Is(err, db.ErrNotFound) {
@@ -289,7 +263,22 @@ func (api *Api) Integration(w http.ResponseWriter, r *http.Request) {
 
 	if r.Method == http.MethodGet {
 		form.Get(project, api.readOnly)
-		utils.WriteJson(w, form)
+		switch t {
+		case db.IntegrationTypeAWS:
+			world, _, _, err := api.loadWorldByRequest(r)
+			if err != nil {
+				klog.Errorln(err)
+			}
+			utils.WriteJson(w, struct {
+				Form forms.IntegrationForm `json:"form"`
+				View any                   `json:"view"`
+			}{
+				Form: form,
+				View: views.AWS(world),
+			})
+		default:
+			utils.WriteJson(w, form)
+		}
 		return
 	}
 
@@ -510,6 +499,69 @@ func (api *Api) Check(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (api *Api) Instrumentation(w http.ResponseWriter, r *http.Request) {
+	vars := mux.Vars(r)
+	projectId := db.ProjectId(vars["project"])
+	appId, err := model.NewApplicationIdFromString(vars["app"])
+	if err != nil {
+		klog.Warningln(err)
+		http.Error(w, "invalid application id: "+vars["app"], http.StatusBadRequest)
+		return
+	}
+
+	if r.Method == http.MethodPost {
+		if api.readOnly {
+			return
+		}
+		var form forms.ApplicationInstrumentationForm
+		if err = forms.ReadAndValidate(r, &form); err != nil {
+			klog.Warningln("bad request:", err)
+			http.Error(w, "invalid data", http.StatusBadRequest)
+			return
+		}
+		if err = api.db.SaveApplicationSetting(projectId, appId, &form.ApplicationInstrumentation); err != nil {
+			klog.Errorln(err)
+			http.Error(w, "", http.StatusInternalServerError)
+			return
+		}
+		return
+	}
+
+	world, _, _, err := api.loadWorldByRequest(r)
+	if err != nil {
+		klog.Errorln(err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+	if world == nil {
+		http.Error(w, "Application not found", http.StatusNotFound)
+		return
+	}
+	app := world.GetApplication(appId)
+	if app == nil {
+		klog.Warningln("application not found:", appId)
+		http.Error(w, "Application not found", http.StatusNotFound)
+		return
+	}
+
+	t := model.ApplicationType(vars["type"])
+	var instrumentation *model.ApplicationInstrumentation
+	if app.Settings != nil && app.Settings.Instrumentation != nil && app.Settings.Instrumentation[t] != nil {
+		instrumentation = app.Settings.Instrumentation[t]
+	} else {
+		instrumentation = model.GetDefaultInstrumentation(t)
+	}
+	if instrumentation == nil {
+		http.Error(w, fmt.Sprintf("unsupported instrumentation type: %s", t), http.StatusBadRequest)
+		return
+	}
+	if api.readOnly {
+		instrumentation.Credentials.Username = "<username>"
+		instrumentation.Credentials.Password = "<password>"
+	}
+	utils.WriteJson(w, instrumentation)
+}
+
 func (api *Api) Profile(w http.ResponseWriter, r *http.Request) {
 	vars := mux.Vars(r)
 	projectId := db.ProjectId(vars["project"])
@@ -530,7 +582,6 @@ func (api *Api) Profile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid data", http.StatusBadRequest)
 			return
 		}
-		klog.Infoln(form)
 		if err := api.db.SaveApplicationSetting(projectId, appId, &form.ApplicationSettingsProfiling); err != nil {
 			klog.Errorln(err)
 			http.Error(w, "", http.StatusInternalServerError)
@@ -555,12 +606,6 @@ func (api *Api) Profile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Application not found", http.StatusNotFound)
 		return
 	}
-	settings, err := api.db.GetApplicationSettings(project.Id, app.Id)
-	if err != nil {
-		klog.Errorln(err)
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
 	var ch *clickhouse.Client
 	if cfg := project.Settings.Integrations.Clickhouse; cfg != nil {
 		ch, err = GetClickhouseClient(cfg)
@@ -570,7 +615,7 @@ func (api *Api) Profile(w http.ResponseWriter, r *http.Request) {
 	}
 	q := r.URL.Query()
 	auditor.Audit(world, project, nil)
-	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Profiling(r.Context(), ch, app, settings, q, world.Ctx)))
+	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Profiling(r.Context(), ch, app, q, world.Ctx)))
 }
 
 func (api *Api) Tracing(w http.ResponseWriter, r *http.Request) {
@@ -617,12 +662,6 @@ func (api *Api) Tracing(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Application not found", http.StatusNotFound)
 		return
 	}
-	settings, err := api.db.GetApplicationSettings(project.Id, app.Id)
-	if err != nil {
-		klog.Errorln(err)
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
 	q := r.URL.Query()
 	var ch *clickhouse.Client
 	if cfg := project.Settings.Integrations.Clickhouse; cfg != nil {
@@ -632,7 +671,7 @@ func (api *Api) Tracing(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	auditor.Audit(world, project, nil)
-	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Tracing(r.Context(), ch, app, settings, q, world)))
+	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Tracing(r.Context(), ch, app, q, world)))
 }
 
 func (api *Api) Logs(w http.ResponseWriter, r *http.Request) {
@@ -679,12 +718,6 @@ func (api *Api) Logs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Application not found", http.StatusNotFound)
 		return
 	}
-	settings, err := api.db.GetApplicationSettings(project.Id, app.Id)
-	if err != nil {
-		klog.Errorln(err)
-		http.Error(w, "", http.StatusInternalServerError)
-		return
-	}
 	var ch *clickhouse.Client
 	if cfg := project.Settings.Integrations.Clickhouse; cfg != nil {
 		ch, err = GetClickhouseClient(cfg)
@@ -694,7 +727,7 @@ func (api *Api) Logs(w http.ResponseWriter, r *http.Request) {
 	}
 	auditor.Audit(world, project, nil)
 	q := r.URL.Query()
-	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Logs(r.Context(), ch, app, settings, q, world)))
+	utils.WriteJson(w, withContext(project, cacheStatus, world, views.Logs(r.Context(), ch, app, q, world)))
 }
 
 func (api *Api) Node(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +815,10 @@ func (api *Api) loadWorldByRequest(r *http.Request) (*model.World, *db.Project, 
 	}
 
 	world, cacheStatus, err := api.loadWorld(r.Context(), project, from, to)
+	if world == nil {
+		step := increaseStepForBigDurations(to.Sub(from), 15*timeseries.Second)
+		world = model.NewWorld(from, to.Add(-step), step)
+	}
 	return world, project, cacheStatus, err
 }
 

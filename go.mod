@@ -9,14 +9,16 @@ require (
 	github.com/PagerDuty/go-pagerduty v1.6.0
 	github.com/atc0005/go-teams-notify/v2 v2.7.0
 	github.com/buger/jsonparser v1.1.1
-	github.com/coroot/logparser v1.0.14
+	github.com/coroot/logparser v1.1.3
 	github.com/dustin/go-humanize v1.0.1
+	github.com/golang/snappy v0.0.4
 	github.com/google/pprof v0.0.0-20230111200839-76d1ae5aea2b
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/mux v1.8.0
 	github.com/grafana/pyroscope-go/godeltaprof v0.1.6
 	github.com/hako/durafmt v0.0.0-20210608085754-5c1018a4e16b
 	github.com/jpillora/backoff v1.0.0
+	github.com/klauspost/compress v1.17.7
 	github.com/lib/pq v1.10.7
 	github.com/matoous/go-nanoid v1.5.0
 	github.com/mattn/go-sqlite3 v1.14.15
@@ -37,6 +39,7 @@ require (
 	gonum.org/v1/gonum v0.12.0
 	google.golang.org/protobuf v1.33.0
 	gopkg.in/alecthomas/kingpin.v2 v2.2.6
+	inet.af/netaddr v0.0.0-20230525184311-b8eac61e914a
 	k8s.io/klog v1.0.0
 )
 
@@ -66,7 +69,6 @@ require (
 	github.com/hashicorp/go-retryablehttp v0.7.1 // indirect
 	github.com/hashicorp/go-version v1.6.0 // indirect
 	github.com/jackc/puddle/v2 v2.2.1 // indirect
-	github.com/klauspost/compress v1.17.7 // indirect
 	github.com/matttproud/golang_protobuf_extensions v1.0.4 // indirect
 	github.com/pascaldekloe/name v1.0.1 // indirect
 	github.com/paulmach/orb v0.9.0 // indirect
@@ -83,6 +85,8 @@ require (
 	go.uber.org/goleak v1.3.0 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/zap v1.27.0 // indirect
+	go4.org/intern v0.0.0-20211027215823-ae77deb06f29 // indirect
+	go4.org/unsafe/assume-no-moving-gc v0.0.0-20230525183740-e7c30c78aeb2 // indirect
 	golang.org/x/mod v0.16.0 // indirect
 	golang.org/x/sync v0.6.0 // indirect
 	golang.org/x/sys v0.18.0 // indirect

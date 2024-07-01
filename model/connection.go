@@ -9,8 +9,28 @@ import (
 type Protocol string
 
 const (
-	ProtocolMongodb = "mongo"
+	ProtocolPostgres  = "postgres"
+	ProtocolMongodb   = "mongo"
+	ProtocolRedis     = "redis"
+	ProtocolMysql     = "mysql"
+	ProtocolMemcached = "memcached"
 )
+
+func (p Protocol) ToApplicationType() ApplicationType {
+	switch p {
+	case ProtocolPostgres:
+		return ApplicationTypePostgres
+	case ProtocolRedis:
+		return ApplicationTypeRedis
+	case ProtocolMongodb:
+		return ApplicationTypeMongodb
+	case ProtocolMysql:
+		return ApplicationTypeMysql
+	case ProtocolMemcached:
+		return ApplicationTypeMemcached
+	}
+	return ApplicationTypeUnknown
+}
 
 type Connection struct {
 	ActualRemotePort string

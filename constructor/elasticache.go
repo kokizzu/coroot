@@ -15,19 +15,21 @@ func loadElasticacheMetadata(w *model.World, metrics map[string][]model.MetricVa
 		}
 		instance := ecInstancesById[ecId]
 		if instance == nil {
-			var id model.ApplicationId
+			var appId model.ApplicationId
 			instanceParts := strings.SplitN(ecId, "/", 3)
 			if len(instanceParts) != 3 {
 				continue
 			}
-			id = model.NewApplicationId("", model.ApplicationKindElasticacheCluster, m.Labels["cluster_id"])
-			instance = w.GetOrCreateApplication(id).GetOrCreateInstance(instanceParts[1], nil)
+			appId = model.NewApplicationId("", model.ApplicationKindElasticacheCluster, m.Labels["cluster_id"])
+			instanceName := instanceParts[1] + "-" + instanceParts[2]
+			instance = w.GetOrCreateApplication(appId).GetOrCreateInstance(instanceName, nil)
 			ecInstancesById[ecId] = instance
 			instance.Elasticache = &model.Elasticache{}
 		}
 		if instance.Node == nil {
-			instance.Node = model.NewNode("elasticache:" + instance.Name)
-			instance.Node.Name.Update(m.Values, "elasticache:"+instance.Name)
+			name := "elasticache:" + instance.Name
+			instance.Node = model.NewNode(model.NewNodeId(name, name))
+			instance.Node.Name.Update(m.Values, name)
 			instance.Node.Instances = append(instance.Node.Instances, instance)
 			w.Nodes = append(w.Nodes, instance.Node)
 		}

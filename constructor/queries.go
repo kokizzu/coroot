@@ -41,6 +41,7 @@ var QUERIES = map[string]string{
 	"node_net_ip":                 `node_net_interface_ip`,
 	"node_net_rx_bytes":           `rate(node_net_received_bytes_total[$RANGE])`,
 	"node_net_tx_bytes":           `rate(node_net_transmitted_bytes_total[$RANGE])`,
+	"ip_to_fqdn":                  `sum by(fqdn, ip) (ip_to_fqdn)`,
 
 	"fargate_node_machine_cpu_cores":    `machine_cpu_cores{eks_amazonaws_com_compute_type="fargate"}`,
 	"fargate_node_machine_memory_bytes": `machine_memory_bytes{eks_amazonaws_com_compute_type="fargate"}`,
@@ -109,6 +110,8 @@ var QUERIES = map[string]string{
 	"container_cassandra_queries_histogram": `rate(container_cassandra_queries_duration_seconds_total_bucket[$RANGE])`,
 	"container_rabbitmq_messages":           `rate(container_rabbitmq_messages_total[$RANGE])`,
 	"container_nats_messages":               `rate(container_nats_messages_total[$RANGE])`,
+	"container_dns_requests_total":          `rate(container_dns_requests_total[$RANGE])`,
+	"container_dns_requests_latency":        `rate(container_dns_requests_duration_seconds_total_bucket[$RANGE])`,
 
 	"kube_pod_init_container_info":                     `kube_pod_init_container_info`,
 	"kube_pod_container_resource_requests":             `kube_pod_container_resource_requests`,
@@ -122,6 +125,8 @@ var QUERIES = map[string]string{
 	"kube_deployment_spec_replicas":                    `kube_deployment_spec_replicas`,
 	"kube_daemonset_status_desired_number_scheduled":   `kube_daemonset_status_desired_number_scheduled`,
 	"kube_statefulset_replicas":                        `kube_statefulset_replicas`,
+
+	"aws_discovery_error": `aws_discovery_error`,
 
 	"aws_rds_info":                        `aws_rds_info`,
 	"aws_rds_status":                      `aws_rds_status`,
@@ -146,6 +151,7 @@ var QUERIES = map[string]string{
 
 	"pg_connections":                  `pg_connections{db!="postgres"}`,
 	"pg_up":                           `pg_up`,
+	"pg_scrape_error":                 `pg_scrape_error`,
 	"pg_info":                         `pg_info`,
 	"pg_setting":                      `pg_setting`,
 	"pg_lock_awaiting_queries":        `pg_lock_awaiting_queries`,
@@ -159,6 +165,7 @@ var QUERIES = map[string]string{
 	"pg_wal_reply_lsn":                `pg_wal_reply_lsn`,
 
 	"redis_up":                              `redis_up`,
+	"redis_scrape_error":                    `redis_exporter_last_scrape_error`,
 	"redis_instance_info":                   `redis_instance_info`,
 	"redis_commands_duration_seconds_total": `rate(redis_commands_duration_seconds_total[$RANGE])`,
 	"redis_commands_total":                  `rate(redis_commands_total[$RANGE])`,
@@ -170,9 +177,11 @@ var QUERIES = map[string]string{
 	"container_jvm_safepoint_sync_time_seconds": `rate(container_jvm_safepoint_sync_time_seconds[$RANGE])`,
 	"container_jvm_safepoint_time_seconds":      `rate(container_jvm_safepoint_time_seconds[$RANGE])`,
 
-	"mongodb_up":                     `mongodb_up`,
-	"mongodb_members_self":           `mongodb_members_self`,
-	"mongodb_rs_optimes_lastApplied": `timestamp(mongodb_rs_optimes_lastAppliedWallTime) - mongodb_rs_optimes_lastAppliedWallTime/1000`,
+	"mongo_up":                           `mongo_up`,
+	"mongo_info":                         `mongo_info`,
+	"mongo_scrape_error":                 `mongo_scrape_error`,
+	"mongo_rs_status":                    `mongo_rs_status`,
+	"mongo_rs_last_applied_timestamp_ms": `timestamp(mongo_rs_last_applied_timestamp_ms) - mongo_rs_last_applied_timestamp_ms/1000`,
 
 	"container_dotnet_info":                              `container_dotnet_info`,
 	"container_dotnet_memory_allocated_bytes_total":      `rate(container_dotnet_memory_allocated_bytes_total[$RANGE])`,
@@ -184,6 +193,31 @@ var QUERIES = map[string]string{
 	"container_dotnet_thread_pool_completed_items_total": `rate(container_dotnet_thread_pool_completed_items_total[$RANGE])`,
 	"container_dotnet_thread_pool_queue_length":          `container_dotnet_thread_pool_queue_length`,
 	"container_dotnet_thread_pool_size":                  `container_dotnet_thread_pool_size`,
+
+	"memcached_up":                  `memcached_up`,
+	"memcached_version":             `memcached_version`,
+	"memcached_limit_bytes":         `memcached_limit_bytes`,
+	"memcached_commands_total":      `rate(memcached_commands_total[$RANGE])`,
+	"memcached_items_evicted_total": `rate(memcached_items_evicted_total[$RANGE])`,
+
+	"mysql_up":                                `mysql_up`,
+	"mysql_scrape_error":                      `mysql_scrape_error`,
+	"mysql_info":                              `mysql_info`,
+	"mysql_top_query_calls_per_second":        `mysql_top_query_calls_per_second`,
+	"mysql_top_query_time_per_second":         `mysql_top_query_time_per_second`,
+	"mysql_top_query_lock_time_per_second":    `mysql_top_query_lock_time_per_second`,
+	"mysql_replication_io_status":             `mysql_replication_io_status`,
+	"mysql_replication_sql_status":            `mysql_replication_sql_status`,
+	"mysql_replication_lag_seconds":           `mysql_replication_lag_seconds`,
+	"mysql_connections_max":                   `mysql_connections_max`,
+	"mysql_connections_current":               `mysql_connections_current`,
+	"mysql_connections_total":                 `rate(mysql_connections_total[$RANGE])`,
+	"mysql_connections_aborted_total":         `rate(mysql_connections_aborted_total[$RANGE])`,
+	"mysql_traffic_received_bytes_total":      `rate(mysql_traffic_received_bytes_total[$RANGE])`,
+	"mysql_traffic_sent_bytes_total":          `rate(mysql_traffic_sent_bytes_total[$RANGE])`,
+	"mysql_queries_total":                     `rate(mysql_queries_total[$RANGE])`,
+	"mysql_slow_queries_total":                `rate(mysql_slow_queries_total[$RANGE])`,
+	"mysql_top_table_io_wait_time_per_second": `mysql_top_table_io_wait_time_per_second`,
 }
 
 var RecordingRules = map[string]func(p *db.Project, w *model.World) []model.MetricValues{

@@ -8,18 +8,22 @@ import (
 
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/coroot/timeseries"
+	"github.com/coroot/coroot/utils"
 	"github.com/coroot/logparser"
 	"k8s.io/klog"
 )
 
 type instanceId struct {
-	ns, name, node string
+	ns   string
+	name string
+	node model.NodeId
 }
 
 func getInstanceAndContainer(w *model.World, node *model.Node, instances map[instanceId]*model.Instance, containerId string) (*model.Instance, *model.Container) {
-	nodeId, nodeName := "", ""
+	var nodeId model.NodeId
+	var nodeName string
 	if node != nil {
-		nodeId = node.MachineID
+		nodeId = node.Id
 		nodeName = node.GetName()
 	}
 	if !strings.HasPrefix(containerId, "/") {
@@ -34,6 +38,16 @@ func getInstanceAndContainer(w *model.World, node *model.Node, instances map[ins
 		ns, pod := parts[2], parts[3]
 		containerName = parts[4]
 		instance = instances[instanceId{ns: ns, name: pod, node: nodeId}]
+	} else if len(parts) == 7 && parts[1] == "nomad" {
+		ns, job, group, allocId, task := parts[2], parts[3], parts[4], parts[5], parts[6]
+		containerName = task
+		appId := model.NewApplicationId(ns, model.ApplicationKindNomadJobGroup, job+"."+group)
+		id := instanceId{ns: ns, name: group + "-" + allocId, node: nodeId}
+		instance = instances[id]
+		if instance == nil {
+			instance = w.GetOrCreateApplication(appId).GetOrCreateInstance(id.name, node)
+			instances[id] = instance
+		}
 	} else {
 		var appId model.ApplicationId
 		var instanceName, ns string
@@ -62,13 +76,13 @@ func getInstanceAndContainer(w *model.World, node *model.Node, instances map[ins
 	return instance, instance.GetOrCreateContainer(containerId, containerName)
 }
 
-func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs promJobStatuses, nodesByMachineId map[string]*model.Node, servicesByClusterIP map[string]*model.Service) {
+func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs promJobStatuses, nodesByID map[model.NodeId]*model.Node, servicesByClusterIP map[string]*model.Service, ip2fqdn map[string]*utils.StringSet) {
 	instances := map[instanceId]*model.Instance{}
 	for _, a := range w.Applications {
 		for _, i := range a.Instances {
-			nodeId := ""
+			var nodeId model.NodeId
 			if i.Node != nil {
-				nodeId = i.Node.MachineID
+				nodeId = i.Node.Id
 			}
 			instances[instanceId{ns: a.Id.Namespace, name: i.Name, node: nodeId}] = i
 		}
@@ -83,7 +97,8 @@ func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs
 			continue
 		}
 		for _, m := range metrics[queryName] {
-			instance, container := getInstanceAndContainer(w, nodesByMachineId[m.Labels["machine_id"]], instances, m.Labels["container_id"])
+			nodeId := model.NewNodeIdFromLabels(m.Labels)
+			instance, container := getInstanceAndContainer(w, nodesByID[nodeId], instances, m.Labels["container_id"])
 			if instance == nil || container == nil {
 				continue
 			}
@@ -92,8 +107,11 @@ func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs
 				if image := m.Labels["image"]; image != "" {
 					container.Image = image
 				}
+				if strings.HasSuffix(m.Labels["systemd_triggered_by"], ".timer") {
+					container.PeriodicSystemdJob = true
+				}
 			case "container_net_latency":
-				id := instanceId{ns: instance.OwnerId.Namespace, name: instance.Name, node: instance.NodeName()}
+				id := instanceId{ns: instance.OwnerId.Namespace, name: instance.Name, node: instance.NodeId()}
 				rtts := rttByInstance[id]
 				if rtts == nil {
 					rtts = map[string]*timeseries.TimeSeries{}
@@ -164,6 +182,28 @@ func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs
 					}
 					c.RequestsHistogram[protocol][float32(le)] = merge(c.RequestsHistogram[protocol][float32(le)], m.Values, timeseries.NanSum)
 				}
+			case "container_dns_requests_total":
+				r := model.DNSRequest{
+					Type:   m.Labels["request_type"],
+					Domain: m.Labels["domain"],
+				}
+				if r.Type == "" || r.Domain == "" {
+					continue
+				}
+				status := m.Labels["status"]
+				byStatus := container.DNSRequests[r]
+				if byStatus == nil {
+					byStatus = map[string]*timeseries.TimeSeries{}
+					container.DNSRequests[r] = byStatus
+				}
+				byStatus[status] = merge(byStatus[status], m.Values, timeseries.Any)
+			case "container_dns_requests_latency":
+				le, err := strconv.ParseFloat(m.Labels["le"], 32)
+				if err != nil {
+					klog.Warningln(err)
+					continue
+				}
+				container.DNSRequestsHistogram[float32(le)] = merge(container.DNSRequestsHistogram[float32(le)], m.Values, timeseries.Any)
 			case "container_cpu_limit":
 				container.CpuLimit = merge(container.CpuLimit, m.Values, timeseries.Any)
 			case "container_cpu_usage":
@@ -236,7 +276,7 @@ func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs
 						u.RemoteInstance = instancesByListen[l]
 					}
 				}
-				if upstreams, ok := rttByInstance[instanceId{ns: instance.OwnerId.Namespace, name: instance.Name, node: instance.NodeName()}]; ok {
+				if upstreams, ok := rttByInstance[instanceId{ns: instance.OwnerId.Namespace, name: instance.Name, node: instance.NodeId()}]; ok {
 					u.Rtt = merge(u.Rtt, upstreams[u.ActualRemoteIP], timeseries.Any)
 				}
 				if svc := servicesByClusterIP[u.ServiceRemoteIP]; svc != nil {
@@ -270,7 +310,11 @@ func loadContainers(w *model.World, metrics map[string][]model.MetricValues, pjs
 						appId.Name = svc.Name
 					}
 				} else {
-					appId.Name = externalServiceName(u.ActualRemotePort)
+					if fqdns := ip2fqdn[u.ActualRemoteIP]; fqdns != nil && fqdns.Len() > 0 {
+						appId.Name = fqdns.Items()[0] + ":" + u.ActualRemotePort
+					} else {
+						appId.Name = externalServiceName(u.ActualRemotePort)
+					}
 				}
 				ri := w.GetOrCreateApplication(appId).GetOrCreateInstance(u.ActualRemoteIP+":"+u.ActualRemotePort, nil)
 				ri.TcpListens[model.Listen{IP: u.ActualRemoteIP, Port: u.ActualRemotePort}] = true
@@ -320,7 +364,7 @@ func getOrCreateConnection(instance *model.Instance, container string, m model.M
 		instanceId: instanceId{
 			ns:   instance.OwnerId.Namespace,
 			name: instance.Name,
-			node: instance.NodeName(),
+			node: instance.NodeId(),
 		},
 		destination:       dest,
 		actualDestination: actualDest,

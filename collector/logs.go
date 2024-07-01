@@ -33,7 +33,13 @@ func (c *Collector) Logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	data, err := io.ReadAll(r.Body)
+	decoder, err := getDecoder(r.Header.Get("Content-Encoding"), r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	data, err := io.ReadAll(decoder)
 	if err != nil {
 		klog.Errorln(err)
 		http.Error(w, "", http.StatusInternalServerError)
@@ -128,21 +134,17 @@ func (b *LogsBatch) Add(req *v1.ExportLogsServiceRequest) {
 
 	for _, l := range req.GetResourceLogs() {
 		var serviceName string
-		resourceAttributes := map[string]string{}
-		for _, attr := range l.GetResource().GetAttributes() {
-			if attr.GetKey() == semconv.AttributeServiceName {
-				serviceName = attr.GetValue().GetStringValue()
+		resourceAttributes := attributesToMap(l.GetResource().GetAttributes())
+		for k, v := range resourceAttributes {
+			if k == semconv.AttributeServiceName {
+				serviceName = v
 			}
-			resourceAttributes[attr.GetKey()] = attr.GetValue().GetStringValue()
 		}
 		for _, sl := range l.GetScopeLogs() {
 			scopeName := sl.GetScope().GetName()
 			scopeVersion := sl.GetScope().GetVersion()
 			for _, lr := range sl.GetLogRecords() {
-				logAttributes := map[string]string{}
-				for _, attr := range lr.GetAttributes() {
-					logAttributes[attr.GetKey()] = attr.GetValue().GetStringValue()
-				}
+				logAttributes := attributesToMap(lr.GetAttributes())
 				if scopeName != "" {
 					logAttributes[semconv.AttributeOtelScopeName] = scopeName
 				}

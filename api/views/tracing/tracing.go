@@ -8,12 +8,10 @@ import (
 	"strings"
 	"sync"
 
-	"golang.org/x/exp/maps"
-
 	"github.com/coroot/coroot/clickhouse"
-	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/coroot/utils"
+	"golang.org/x/exp/maps"
 	"k8s.io/klog"
 )
 
@@ -63,7 +61,7 @@ type Event struct {
 	Attributes map[string]string `json:"attributes"`
 }
 
-func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, appSettings *db.ApplicationSettings, q url.Values, w *model.World) *View {
+func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, q url.Values, w *model.World) *View {
 	if ch == nil {
 		return nil
 	}
@@ -88,35 +86,38 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 		v.Message = fmt.Sprintf("Clickhouse error: %s", err)
 		return v
 	}
-	service := ""
-	if appSettings != nil && appSettings.Tracing != nil {
-		service = appSettings.Tracing.Service
-	} else {
-		service = model.GuessService(services, app.Id)
-	}
-	var serviceFound, ebpfSpansFound bool
+
+	var ebpfSpansFound bool
+	var otelServices []string
 	for _, s := range services {
 		if strings.HasPrefix(s, "/") {
 			ebpfSpansFound = true
 		} else {
-			if s == service {
-				serviceFound = true
-			}
-			v.Services = append(v.Services, Service{Name: s, Linked: s == service})
+			otelServices = append(otelServices, s)
 		}
+	}
+
+	var otelService string
+	if app.Settings != nil && app.Settings.Tracing != nil {
+		otelService = app.Settings.Tracing.Service
+	} else {
+		otelService = model.GuessService(otelServices, app.Id)
+	}
+	for _, s := range otelServices {
+		v.Services = append(v.Services, Service{Name: s, Linked: s == otelService})
 	}
 	sort.Slice(v.Services, func(i, j int) bool {
 		return v.Services[i].Name < v.Services[j].Name
 	})
 
-	if serviceFound {
+	if len(otelServices) > 0 {
 		v.Sources = append(v.Sources, Source{Type: model.TraceSourceOtel, Name: "OpenTelemetry"})
 	}
 	if ebpfSpansFound {
 		v.Sources = append(v.Sources, Source{Type: model.TraceSourceAgent, Name: "OpenTelemetry (eBPF)"})
 	}
 
-	if !serviceFound && !ebpfSpansFound {
+	if len(v.Sources) == 0 {
 		v.Status = model.UNKNOWN
 		v.Message = "No traces found"
 		return v
@@ -129,7 +130,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	case traceId != "":
 		spans, err = ch.GetSpansByTraceId(ctx, traceId)
 
-	case (source == "" || source == model.TraceSourceOtel) && serviceFound:
+	case (source == "" || source == model.TraceSourceOtel) && otelService != "":
 		source = model.TraceSourceOtel
 		var ignoredPeerAddrs []string
 		if !app.Category.Monitoring() {
@@ -142,9 +143,9 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 			var e error
 			sq := clickhouse.SpanQuery{
 				Ctx:              w.Ctx,
-				ServiceName:      service,
 				ExcludePeerAddrs: ignoredPeerAddrs,
 			}
+			sq.Filters = append(sq.Filters, clickhouse.NewSpanFilter("ServiceName", "=", otelService))
 			histogram, e = ch.GetSpansByServiceNameHistogram(ctx, sq)
 			if e != nil {
 				err = e
@@ -162,9 +163,9 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 				DurTo:            durTo,
 				Errors:           errors,
 				Limit:            limit,
-				ServiceName:      service,
 				ExcludePeerAddrs: ignoredPeerAddrs,
 			}
+			sq.Filters = append(sq.Filters, clickhouse.NewSpanFilter("ServiceName", "=", otelService))
 			spans, e = ch.GetSpansByServiceName(ctx, sq)
 			if e != nil {
 				err = e
@@ -222,7 +223,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 
 	switch source {
 	case model.TraceSourceOtel:
-		v.Message = fmt.Sprintf("Using traces of <i>%s</i>", service)
+		v.Message = fmt.Sprintf("Using traces of <i>%s</i>", otelService)
 	case model.TraceSourceAgent:
 		v.Message = "Using data gathered by the eBPF tracer"
 	}

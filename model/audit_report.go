@@ -16,10 +16,13 @@ const (
 	AuditReportMemory      AuditReportName = "Memory"
 	AuditReportStorage     AuditReportName = "Storage"
 	AuditReportNetwork     AuditReportName = "Net"
+	AuditReportDNS         AuditReportName = "DNS"
 	AuditReportLogs        AuditReportName = "Logs"
 	AuditReportPostgres    AuditReportName = "Postgres"
 	AuditReportRedis       AuditReportName = "Redis"
 	AuditReportMongodb     AuditReportName = "Mongodb"
+	AuditReportMemcached   AuditReportName = "Memcached"
+	AuditReportMysql       AuditReportName = "Mysql"
 	AuditReportJvm         AuditReportName = "JVM"
 	AuditReportDotNet      AuditReportName = ".NET"
 	AuditReportNode        AuditReportName = "Node"
@@ -39,12 +42,12 @@ type AuditReport struct {
 	checkConfigs CheckConfigs
 	detailed     bool
 
-	Name              AuditReportName    `json:"name"`
-	Status            Status             `json:"status"`
-	Widgets           []*Widget          `json:"widgets"`
-	Checks            []*Check           `json:"checks"`
-	Custom            bool               `json:"custom"`
-	ConfigurationHint *ConfigurationHint `json:"configuration_hint"`
+	Name            AuditReportName `json:"name"`
+	Status          Status          `json:"status"`
+	Widgets         []*Widget       `json:"widgets"`
+	Checks          []*Check        `json:"checks"`
+	Custom          bool            `json:"custom"`
+	Instrumentation ApplicationType `json:"instrumentation"`
 }
 
 func NewAuditReport(app *Application, ctx timeseries.Context, checkConfigs CheckConfigs, name AuditReportName, detailed bool) *AuditReport {

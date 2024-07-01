@@ -28,6 +28,8 @@ type Application struct {
 
 	Status  Status
 	Reports []*AuditReport
+
+	Settings *ApplicationSettings
 }
 
 func NewApplication(id ApplicationId) *Application {
@@ -85,7 +87,7 @@ func (app *Application) Labels() Labels {
 		res["db"] = fmt.Sprintf(`%s (RDS)`, app.Instances[0].Rds.Engine.Value())
 	case ApplicationKindElasticacheCluster:
 		res["db"] = fmt.Sprintf(`%s (EC)`, app.Instances[0].Elasticache.Engine.Value())
-	case ApplicationKindUnknown, ApplicationKindDockerSwarmService:
+	case ApplicationKindUnknown, ApplicationKindDockerSwarmService, ApplicationKindNomadJobGroup:
 		if app.Id.Namespace != "_" {
 			res["ns"] = app.Id.Namespace
 		} else {
@@ -135,6 +137,24 @@ func (app *Application) IsRedis() bool {
 func (app *Application) IsMongodb() bool {
 	for _, i := range app.Instances {
 		if i.Mongodb != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (app *Application) IsMysql() bool {
+	for _, i := range app.Instances {
+		if i.Mysql != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func (app *Application) IsMemcached() bool {
+	for _, i := range app.Instances {
+		if i.Memcached != nil {
 			return true
 		}
 	}
@@ -205,45 +225,6 @@ func (app *Application) hasClientsInAWS() bool {
 	return false
 }
 
-func (app *Application) InstrumentationStatus() map[ApplicationType]bool {
-	res := map[ApplicationType]bool{}
-	for _, i := range app.Instances {
-		if i.IsObsolete() {
-			continue
-		}
-		if app.Id.Kind == ApplicationKindExternalService {
-			if !app.hasClientsInAWS() {
-				continue
-			}
-			for l := range i.TcpListens {
-				switch l.Port {
-				case "5432", "3306":
-					res[ApplicationTypeRDS] = false
-				case "6379", "11211":
-					res[ApplicationTypeElastiCache] = false
-				}
-			}
-		}
-		for t := range i.ApplicationTypes() {
-			var instanceInstrumented bool
-			switch t {
-			case ApplicationTypePostgres:
-				instanceInstrumented = i.Postgres != nil
-			case ApplicationTypeRedis, ApplicationTypeKeyDB:
-				t = ApplicationTypeRedis
-				instanceInstrumented = i.Redis != nil
-			case ApplicationTypeMongodb, ApplicationTypeMongos:
-				t = ApplicationTypeMongodb
-				instanceInstrumented = i.Mongodb != nil
-			default:
-				continue
-			}
-			res[t] = res[t] || instanceInstrumented
-		}
-	}
-	return res
-}
-
 func (app *Application) GetClientsConnections() map[ApplicationId][]*Connection {
 	res := map[ApplicationId][]*Connection{}
 	for _, d := range app.Downstreams {
@@ -266,5 +247,33 @@ func (app *Application) ApplicationTypes() map[ApplicationType]bool {
 			res[t] = true
 		}
 	}
+
+	if app.Id.Kind == ApplicationKindExternalService {
+		for _, d := range app.Downstreams {
+			for p := range d.RequestsCount {
+				t := p.ToApplicationType()
+				if t == ApplicationTypeUnknown {
+					continue
+				}
+				res[t] = true
+			}
+		}
+	}
+
 	return res
+}
+
+func (app *Application) PeriodicJob() bool {
+	switch app.Id.Kind {
+	case ApplicationKindJob, ApplicationKindCronJob:
+		return true
+	}
+	for _, i := range app.Instances {
+		for _, c := range i.Containers {
+			if c.PeriodicSystemdJob {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -9,12 +9,10 @@ import (
 	"strings"
 
 	"github.com/coroot/coroot/clickhouse"
-	"github.com/coroot/coroot/db"
 	"github.com/coroot/coroot/model"
 	"github.com/coroot/coroot/timeseries"
 	"github.com/coroot/coroot/utils"
 	"github.com/coroot/logparser"
-	"golang.org/x/exp/maps"
 	"k8s.io/klog"
 )
 
@@ -71,7 +69,7 @@ type Query struct {
 	Limit    int             `json:"limit"`
 }
 
-func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, appSettings *db.ApplicationSettings, query url.Values, w *model.World) *View {
+func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, query url.Values, w *model.World) *View {
 	v := &View{}
 
 	var q Query
@@ -106,7 +104,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	if v.View == "" {
 		v.View = viewMessages
 	}
-	renderEntries(ctx, v, ch, app, appSettings, w, q, patterns)
+	renderEntries(ctx, v, ch, app, w, q, patterns)
 
 	if v.Status == model.UNKNOWN {
 		v.View = viewPatterns
@@ -124,7 +122,7 @@ func Render(ctx context.Context, ch *clickhouse.Client, app *model.Application, 
 	return v
 }
 
-func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *model.Application, appSettings *db.ApplicationSettings, w *model.World, q Query, patterns map[string]map[string]*Pattern) {
+func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *model.Application, w *model.World, q Query, patterns map[string]map[string]*Pattern) {
 	services, err := ch.GetServicesFromLogs(ctx)
 	if err != nil {
 		klog.Errorln(err)
@@ -133,22 +131,32 @@ func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *mod
 		return
 	}
 
-	service := ""
-	if appSettings != nil && appSettings.Logs != nil {
-		service = appSettings.Logs.Service
-	} else {
-		service = model.GuessService(maps.Keys(services), app.Id)
-	}
+	var logsFromAgentFound bool
+	var otelServices []string
 	for s := range services {
 		if strings.HasPrefix(s, "/") {
-			v.Sources = append(v.Sources, model.LogSourceAgent)
+			logsFromAgentFound = true
 		} else {
-			v.Services = append(v.Services, s)
-			if s == service {
-				v.Service = s
-				v.Sources = append(v.Sources, model.LogSourceOtel)
-			}
+			otelServices = append(otelServices, s)
 		}
+	}
+	otelService := ""
+	if app.Settings != nil && app.Settings.Logs != nil {
+		otelService = app.Settings.Logs.Service
+	} else {
+		otelService = model.GuessService(otelServices, app.Id)
+	}
+
+	if logsFromAgentFound {
+		v.Sources = append(v.Sources, model.LogSourceAgent)
+	}
+
+	for _, s := range otelServices {
+		if s == otelService {
+			v.Service = s
+			v.Sources = append(v.Sources, model.LogSourceOtel)
+		}
+		v.Services = append(v.Services, s)
 	}
 	sort.Strings(v.Services)
 
@@ -172,15 +180,15 @@ func renderEntries(ctx context.Context, v *View, ch *clickhouse.Client, app *mod
 	var entries []*model.LogEntry
 	switch v.Source {
 	case model.LogSourceOtel:
-		v.Message = fmt.Sprintf("Using OpenTelemetry logs of <i>%s</i>", service)
+		v.Message = fmt.Sprintf("Using OpenTelemetry logs of <i>%s</i>", otelService)
 		v.Severities = services[v.Service]
 		if len(v.Severity) == 0 {
 			v.Severity = v.Severities
 		}
 		if v.View == viewMessages {
-			histogram, err = ch.GetServiceLogsHistogram(ctx, w.Ctx.From, w.Ctx.To, w.Ctx.Step, service, v.Severity, q.Search)
+			histogram, err = ch.GetServiceLogsHistogram(ctx, w.Ctx.From, w.Ctx.To, w.Ctx.Step, otelService, v.Severity, q.Search)
 			if err == nil {
-				entries, err = ch.GetServiceLogs(ctx, w.Ctx.From, w.Ctx.To, service, v.Severity, q.Search, q.Limit)
+				entries, err = ch.GetServiceLogs(ctx, w.Ctx.From, w.Ctx.To, otelService, v.Severity, q.Search, q.Limit)
 			}
 		}
 	case model.LogSourceAgent:
